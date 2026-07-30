@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+import os
 import platform
 from typing import Any, Dict, List, Mapping, Optional, OrderedDict, Tuple, Union
 
@@ -121,7 +122,7 @@ class BaseSafeTensorsFileLoader:
         self,
         dtype: DType = DType.AUTO,
         use_buf_register: bool = True,
-        max_copy_block_size: int = 16 * 1024 * 1024 * 1024,
+        max_copy_block_size: int = 256 * 1024 * 1024,
     ) -> FilesBufferOnDevice:
         """
         trigger copying all the files to device buffers.
@@ -167,6 +168,15 @@ class BaseSafeTensorsFileLoader:
         return FilesBufferOnDevice(factories, pg=self.pg, framework=self.framework)
 
 
+def _force_nogds_from_env() -> bool:
+    return os.getenv("FASTSAFETENSORS_FORCE_NOGDS", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
     r"""Load .safetensors files lazily.
 
@@ -195,14 +205,14 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
         """Map ``copier_type`` to ``nogds`` flag; pass rest through."""
         out = dict(ext_config)
         copier_type = out.pop("copier_type", "gds")
-        out["nogds"] = copier_type != "gds"
+        out["nogds"] = copier_type != "gds" or _force_nogds_from_env()
         return out
 
     def __init__(
         self,
         pg: Optional[Any],
         device: str = "cpu",
-        bbuf_size_kb: int = 16 * 1024,
+        bbuf_size_kb: int = 64 * 1024,
         max_threads: int = 16,
         nogds: bool = False,
         set_numa: bool = True,
@@ -216,6 +226,9 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
         self.device = self.framework.get_device(device, self.pg)
 
         fstcpp.set_debug_log(debug_log)
+
+        if _force_nogds_from_env():
+            nogds = True
 
         if not nogds:
             if platform.system() == "Windows":
@@ -264,7 +277,7 @@ class fastsafe_open:
         device: str = "cpu",
         nogds: bool = False,
         debug_log: bool = False,
-        max_copy_block_size: int = 16 * 1024 * 1024 * 1024,
+        max_copy_block_size: int = 256 * 1024 * 1024,
     ):
         self.loader = SafeTensorsFileLoader(
             pg, device, nogds=nogds, debug_log=debug_log, framework=framework

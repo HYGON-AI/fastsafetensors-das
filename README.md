@@ -23,6 +23,44 @@ Loading safetensors using Fastsafetensor loader:   0% Completed | 0/1 [00:00<?, 
 Loading safetensors using Fastsafetensor loader: 100% Completed | 1/1 [00:00<00:00,  1.23it/s]
 ```
 
+# Build from Source
+
+To build the wheel directly from this checkout:
+
+```bash
+python3 setup.py bdist_wheel
+python3 -m pip install dist/fastsafetensors-*.whl
+```
+
+In an offline container (no PyPI access), install in place instead and skip
+build isolation, so the build runs against the packages already present:
+
+```bash
+python3 -m pip install -e . --no-build-isolation
+```
+
+The build uses standalone `pybind11` headers when available. If `pybind11` is
+not installed, it falls back to the pybind11 headers bundled with `torch`.
+That fallback only applies with `--no-build-isolation`: a normal PEP 517 build
+installs `pybind11` into its isolated environment first (and `torch` is not
+visible there anyway).
+
+Only the pybind11 headers are needed at build time. The extension links nothing
+but `libstdc++` -- CUDA, HIP and cuFile/hyfs symbols are all resolved at runtime
+via `dlopen`, so no CUDA or ROCm SDK is required to build, and one binary serves
+both NVIDIA and HCU.
+
+# GDS/HCU Defaults
+
+This branch keeps `nogds` defaulting to `False`, so the base loader uses GDS by
+default when the platform support is available. The adjusted copy defaults are:
+
+- `bbuf_size_kb`: `64 * 1024` KB (64 MiB)
+- `max_copy_block_size`: `256 * 1024 * 1024` bytes (256 MiB)
+
+Set `FASTSAFETENSORS_FORCE_NOGDS=1` to force the NoGDS path globally. Accepted
+true values are `1`, `true`, `yes`, and `on`.
+
 # Design Details
 
 See [Overview](./docs/overview.md) for features, basic API usage, and configuration.

@@ -30,6 +30,7 @@ When no config file is found, `AutoLoader` uses these defaults:
 ```
 
 The base loader extension defaults to `copier_type: "gds"` (GPU Direct Storage).
+Set `FASTSAFETENSORS_FORCE_NOGDS=1` to force the base loader onto the NoGDS path.
 
 ## queue_size Semantics
 
@@ -109,7 +110,7 @@ Uses ThreeFSLoader with 3FS USRBIO backend.
   "framework": "pytorch",
   "base": {
     "copier_type": "gds",
-    "bbuf_size_kb": 16384,
+    "bbuf_size_kb": 65536,
     "max_threads": 16
   },
   "3fs": {

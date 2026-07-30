@@ -456,7 +456,7 @@ class ParallelLoader(PipelineParallel):
         queue_size: int = 0,  # Changed default to 0 for unbuffered behavior
         use_tqdm_on_load: bool = True,
         device: str = "cpu",
-        bbuf_size_kb: int = 16 * 1024,
+        bbuf_size_kb: int = 64 * 1024,
         max_threads: int = 16,
         nogds: bool = False,
         set_numa: bool = True,

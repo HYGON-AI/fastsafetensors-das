@@ -8,15 +8,20 @@ from setuptools.command.build_ext import build_ext
 
 
 def MyExtension(name, sources, mod_name, *args, **kwargs):
-    import pybind11
+    try:
+        import pybind11
 
-    pybind11_path = os.path.dirname(pybind11.__file__)
+        pybind11_include = os.path.join(os.path.dirname(pybind11.__file__), "include")
+    except ImportError:
+        # No standalone pybind11 (e.g. offline HCU container): torch bundles
+        # the headers under <torch>/include/pybind11.
+        import torch
+
+        pybind11_include = os.path.join(os.path.dirname(torch.__file__), "include")
 
     kwargs["define_macros"] = [("__MOD_NAME__", mod_name)]
     kwargs["libraries"] = ["stdc++"]
-    kwargs["include_dirs"] = kwargs.get("include_dirs", []) + [
-        f"{pybind11_path}/include"
-    ]
+    kwargs["include_dirs"] = kwargs.get("include_dirs", []) + [pybind11_include]
     kwargs["language"] = "c++"
     kwargs["extra_compile_args"] = ["-fvisibility=hidden", "-std=c++17"]
 
