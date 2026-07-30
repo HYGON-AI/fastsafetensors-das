@@ -20,7 +20,12 @@ from fastsafetensors.st_types import Device, DeviceType, DType
 
 # Add tests directory to path to import platform_utils
 sys.path.insert(0, os.path.dirname(__file__))
-from platform_utils import skip_if_rocm_expected_failure
+from platform_utils import (
+    is_hyfs_gds,
+    is_rocm_platform,
+    skip_if_no_gds,
+    skip_if_rocm_expected_failure,
+)
 
 
 def load_safetensors_file(
@@ -241,8 +246,41 @@ def test_init_gds(fstcpp_log) -> None:
     assert fstcpp.init_gds() == 0
 
 
+def test_hyfs_loaded_on_hcu(fstcpp_log) -> None:
+    """On HCU, hyfs (libhyfile.so) must load or GDS silently degrades to nogds.
+
+    Guards the hipFile* symbol mapping in ext.cpp: a renamed symbol upstream
+    would fall back to the bounce-buffer path with every other test still green.
+    """
+    import ctypes
+
+    # Not being a HIP runtime is a fact about the host, not a defect: this test
+    # is about hyfs, so it never applies on NVIDIA and must skip even under
+    # FASTSAFETENSORS_TEST_REQUIRE_GDS.
+    if not is_rocm_platform():
+        pytest.skip("not a HIP runtime")
+
+    # A missing hyfs, on the other hand, IS a defect on a host that claims GDS:
+    # without this the whole suite goes green on the nogds fallback.
+    try:
+        ctypes.CDLL("libhyfile.so")
+    except OSError:
+        reason = "hyfs (libhyfile.so) is not installed"
+        if os.getenv("FASTSAFETENSORS_TEST_REQUIRE_GDS", "") == "1":
+            pytest.fail(reason)
+        pytest.skip(reason)
+    assert fstcpp.is_cufile_found(), "libhyfile.so failed to load: GDS is disabled"
+    # create_copier_constructor() silently downgrades to nogds (warning only) when
+    # either of these is false, so a broken hyfs still passes every other test.
+    assert fstcpp.is_gds_supported(0) == 1, "is_gds_available() HIP branch returned 0"
+
+
 def test_close_gds(fstcpp_log) -> None:
     assert fstcpp.close_gds() == 0
+    if is_hyfs_gds():
+        # cuFile re-opens the driver on demand; hyfs does not, so leaving it
+        # closed makes every later GDS call in this session fail with 5001.
+        assert fstcpp.init_gds() == 0
 
 
 def test_get_device_pci_bus(fstcpp_log) -> None:
@@ -270,11 +308,20 @@ def test_alloc_gds_buffer(fstcpp_log, framework) -> None:
 def test_cufile_register_deregister(fstcpp_log, framework) -> None:
     print("test_cufile_register_deregister")
     device, _ = get_and_check_device(framework)
+    # hyfs has no implicit driver init, unlike cuFile.
+    assert fstcpp.init_gds() == 0
     gbuf = framework.alloc_tensor_memory(1024, device)
-    assert gbuf.cufile_register(0, 256) == 0
-    assert gbuf.cufile_register(256, 1024 - 256) == 0
-    assert gbuf.cufile_deregister(0) == 0
-    assert gbuf.cufile_deregister(256) == 0
+    if is_hyfs_gds():
+        # hyfs rounds every registration up to a whole 4KB page and rejects a
+        # second region overlapping it, so the two sub-ranges below are a
+        # cuFile-only capability. Register the buffer as one region instead.
+        assert gbuf.cufile_register(0, 1024) == 0
+        assert gbuf.cufile_deregister(0) == 0
+    else:
+        assert gbuf.cufile_register(0, 256) == 0
+        assert gbuf.cufile_register(256, 1024 - 256) == 0
+        assert gbuf.cufile_deregister(0) == 0
+        assert gbuf.cufile_deregister(256) == 0
     framework.free_tensor_memory(gbuf, device)
 
 
@@ -353,11 +400,14 @@ def test_NoGdsFileCopier(fstcpp_log, input_files, framework) -> None:
 def test_GdsFileCopier(fstcpp_log, input_files, framework) -> None:
     print("test_GdsFileCopier")
     skip_if_rocm_expected_failure("test_GdsFileCopier")
+    skip_if_no_gds(input_files[0])
     meta = SafeTensorsMetadata.from_file(input_files[0], framework)
     device, dev_is_gpu = get_and_check_device(framework)
     reader = fstcpp.gds_file_reader(4, dev_is_gpu, device.index or 0)
     copier = GdsFileCopier(meta, device, reader, framework)
-    gbuf = copier.submit_io(False, 10 * 1024 * 1024 * 1024)
+    # cuFile serves reads into unregistered buffers via an internal bounce
+    # buffer; hyfs returns -1 for every request unless the buffer is registered.
+    gbuf = copier.submit_io(is_hyfs_gds(), 10 * 1024 * 1024 * 1024)
     tensors = copier.wait_io(gbuf)
     for key, exp in load_safetensors_file(input_files[0], device, framework).items():
         actual = tensors[key]
@@ -491,7 +541,46 @@ def test_SafeTensorsFileLoader_copier_selection(
     assert captured["copier_type"] == expected_type
 
 
-def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:
+def test_SafeTensorsFileLoader_force_nogds_env(framework, monkeypatch) -> None:
+    """FASTSAFETENSORS_FORCE_NOGDS must override nogds=False in __init__ too."""
+    _skip_if_not_pytorch(framework)
+    import fastsafetensors.loader as loader_mod
+
+    monkeypatch.setenv("FASTSAFETENSORS_FORCE_NOGDS", "1")
+    monkeypatch.setenv("FASTSAFETENSORS_UNIFIED_MEM", "0")
+
+    captured = {}
+
+    def spy_create_copier_constructor(copier_type, device, **kwargs):
+        captured["copier_type"] = copier_type
+        return lambda metadata, device, framework: None
+
+    monkeypatch.setattr(
+        loader_mod, "create_copier_constructor", spy_create_copier_constructor
+    )
+
+    SafeTensorsFileLoader(
+        pg=SingleGroup(),
+        device="cpu",
+        framework=framework.get_name(),
+        nogds=False,
+    )
+    assert captured["copier_type"] == "nogds"
+
+
+@pytest.mark.parametrize(
+    "max_copy_block_size",
+    [
+        256 * 1024 * 1024,  # the default since the HCU adaptation
+        1024 * 1024,  # forces the multi-block loop in copier/gds.py
+    ],
+)
+def test_SafeTensorsFileLoader(
+    fstcpp_log, input_files, framework, max_copy_block_size
+) -> None:
+    # nogds=False below; without a usable GDS the loader silently downgrades to
+    # nogds and this would pass while covering the same path as the NoGds test.
+    skip_if_no_gds(input_files[0])
     device, _ = get_and_check_device(framework)
     if framework.get_name() == "pytorch":
         import torch
@@ -517,7 +606,9 @@ def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:
     )
     loader.add_filenames({0: input_files})
     bufs = loader.copy_files_to_device(
-        dtype=data_type, use_buf_register=True, max_copy_block_size=256 * 1024 * 1024
+        dtype=data_type,
+        use_buf_register=True,
+        max_copy_block_size=max_copy_block_size,
     )
     last_key = ""
     last_shape: List[int] = []
@@ -687,6 +778,17 @@ def test_float4_e2m1fn_x2(fstcpp_log, tmp_dir, framework) -> None:
         pytest.skip("torch.float4_e2m1fn_x2 requires PyTorch 2.10+")
         return
     device, _ = get_and_check_device(framework)
+    # The dtype can exist while the backend lacks its comparison kernel -- torch
+    # 2.9 on HCU raises NotImplementedError for "compare_eq_ne_cuda". Probe
+    # it here so the gap shows up as a skip rather than a failure in is_equal().
+    probe = torch.zeros(2, dtype=torch.uint8, device=device.as_str()).view(
+        torch.float4_e2m1fn_x2
+    )
+    try:
+        probe.eq(probe)
+    except NotImplementedError:
+        pytest.skip(f"float4_e2m1fn_x2 comparison unsupported on {device.as_str()}")
+        return
     filename = os.path.join(tmp_dir, "f4.safetensors")
     # F4 tensors cannot be created via randn/cast; create via uint8 view.
     # Shape [8, 16] in FP4-element terms = shape [8, 8] in float4_e2m1fn_x2.

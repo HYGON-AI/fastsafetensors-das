@@ -98,6 +98,17 @@ def dev_init() -> None:
     FRAMEWORK.set_device(Device.from_str(dev_str))
 
 
+@pytest.fixture(scope="function", autouse=True)
+def clear_force_nogds(monkeypatch) -> None:
+    """HCU deployment machines often export FASTSAFETENSORS_FORCE_NOGDS globally.
+
+    Left set, every nogds=False test silently runs the bounce-buffer path and
+    still passes -- i.e. zero GDS coverage while green. Tests that want the flag
+    set it themselves after this fixture runs.
+    """
+    monkeypatch.delenv("FASTSAFETENSORS_FORCE_NOGDS", raising=False)
+
+
 @pytest.fixture(scope="function")
 def fstcpp_log() -> None:
     fstcpp.set_debug_log(True)

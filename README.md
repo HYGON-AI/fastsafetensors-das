@@ -50,6 +50,79 @@ but `libstdc++` -- CUDA, HIP and cuFile/hyfs symbols are all resolved at runtime
 via `dlopen`, so no CUDA or ROCm SDK is required to build, and one binary serves
 both NVIDIA and HCU.
 
+# Running the Unit Tests
+
+`TEST_FASTSAFETENSORS_FRAMEWORK` is mandatory (`conftest.py` reads it at import
+time and fails without it); `torch` and `pytorch` are both accepted.
+
+```bash
+pip install -e . --no-build-isolation
+export TEST_FASTSAFETENSORS_FRAMEWORK=pytorch
+
+# everything except tests/unit/threefs (see below). GDS coverage is not
+# guaranteed here: those tests run where GDS works and skip where it does not
+python3 -m pytest tests/unit/ --ignore=tests/unit/threefs -q -rs
+
+# same run on hardware that is supposed to have GDS -- now those skips are failures
+FASTSAFETENSORS_TEST_REQUIRE_GDS=1 \
+  python3 -m pytest tests/unit/ --ignore=tests/unit/threefs -q -rs
+
+# one file, or pick by name
+python3 -m pytest tests/unit/test_fastsafetensors.py -q -k "GdsFileCopier or hyfs"
+
+# multi-GPU collectives
+torchrun --nproc_per_node=2 --master_port=29500 -m pytest tests/unit/test_multi.py -q
+```
+
+Or via the Makefile: `make unittest`, `make unittest-parallel` (4-rank torchrun),
+`make test-vllm`, `make unittest-paddle`, `make htmlcov`.
+
+Test data: the `input_files` fixture looks for `.safetensors` under
+`.testdata/transformers_cache/models--gpt2/` and downloads gpt2 from HuggingFace
+if that directory is missing. **Offline hosts** must pre-create it. Any model
+works for `test_fastsafetensors.py`, but `test_multi.py` hardcodes gpt2 keys
+(`h.0..h.11.*`), so a stand-in must keep `n_layer=12`:
+
+```python
+import os                                           # ~21 MB, 148 tensors
+from transformers import GPT2Config, GPT2Model
+from safetensors.torch import save_file
+
+d = ".testdata/transformers_cache/models--gpt2"
+os.makedirs(d, exist_ok=True)
+m = GPT2Model(GPT2Config(n_layer=12, n_embd=192, n_positions=64, vocab_size=512))
+save_file({k: v.contiguous() for k, v in m.state_dict().items()},
+          os.path.join(d, "model.safetensors"), {"format": "pt"})
+```
+
+`tests/unit/threefs/` needs the separate `fastsafetensor_3fs_reader` package;
+without it the fixtures fall back to a `pread`-based mock, so those tests only
+cover the integration contract, not real 3FS I/O.
+
+GDS-only tests (`test_GdsFileCopier`, `test_SafeTensorsFileLoader`,
+`test_shuffle[False]`) skip themselves when the host cannot actually do GDS.
+The probe registers a real file handle rather than trusting `is_cufile_found()`
+or `is_gds_supported()`: both stay true on a host that has the cuFile library
+but no `nvidia-fs`/`hyfs` kernel module, or whose storage cannot do the DMA at
+all (LVM, SATA, ...). Skipping matters in both directions -- without it a
+missing hyfs makes the loader downgrade to nogds and the test passes while
+covering nothing, and a missing `nvidia-fs` makes it fail on an environment
+issue. CPU-only hosts fall back to `pread`, where the probe succeeds and those
+tests keep running, as they do upstream.
+
+Two environment variables affect the run:
+
+- `FASTSAFETENSORS_TEST_REQUIRE_GDS=1` -- assert that this host is *supposed*
+  to have GDS: the skips above become failures instead. Platform-independent,
+  so it applies to NVIDIA and HCU alike; set it on any CI that runs on
+  GDS-capable hardware, and losing the driver turns the suite red instead of
+  quietly downgrading to nogds. On HCU it additionally requires that
+  `libhyfile.so` loads (`test_hyfs_loaded_on_hcu`). Leave it unset on CPU-only
+  CI, which never exercises real GDS.
+- `FASTSAFETENSORS_FORCE_NOGDS` -- has **no** effect on tests: an autouse
+  fixture clears it per test, so a globally exported value cannot silently turn
+  the GDS tests into nogds runs.
+
 # GDS/HCU Defaults
 
 This branch keeps `nogds` defaulting to `False`, so the base loader uses GDS by

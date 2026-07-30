@@ -142,6 +142,14 @@ class TestAutoLoaderBaseLoader:
             # process_extension_config with {} -> nogds=False (default copier_type="gds")
             assert call_kwargs[1]["nogds"] is False
 
+    def test_force_nogds_env_overrides_gds(self, monkeypatch):
+        """FASTSAFETENSORS_FORCE_NOGDS should make even copier_type='gds' resolve to nogds."""
+        monkeypatch.setenv("FASTSAFETENSORS_FORCE_NOGDS", "1")
+
+        result = RealSafeLoader.process_extension_config({"copier_type": "gds"})
+
+        assert result["nogds"] is True
+
 
 class TestAutoLoader3FSLoader:
     """Test AutoLoader creates ThreeFSLoader for loader='3fs'."""

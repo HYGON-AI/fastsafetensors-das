@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import sys
 
 import pytest
 
@@ -9,9 +10,16 @@ from fastsafetensors import cpp as fstcpp
 from fastsafetensors.common import is_gpu_found
 from fastsafetensors.st_types import DType
 
+# Add tests directory to path to import platform_utils
+sys.path.insert(0, os.path.dirname(__file__))
+from platform_utils import skip_if_no_gds
 
-def test_shuffle(fstcpp_log, input_files, pg, framework):
-    print("test_shuffle")
+
+@pytest.mark.parametrize("nogds", [True, False])
+def test_shuffle(fstcpp_log, input_files, pg, framework, nogds):
+    print(f"test_shuffle nogds={nogds}")
+    if not nogds:
+        skip_if_no_gds(input_files[0])
     if framework.get_name() == "pytorch":
         from safetensors.torch import load_file
 
@@ -27,7 +35,11 @@ def test_shuffle(fstcpp_log, input_files, pg, framework):
     else:
         raise Exception(f"Unknown framework: {framework.get_name()}")
     loader = SafeTensorsFileLoader(
-        pg=pg, device=device, nogds=True, framework=framework.get_name(), debug_log=True
+        pg=pg,
+        device=device,
+        nogds=nogds,
+        framework=framework.get_name(),
+        debug_log=True,
     )
     loader.add_filenames({0: input_files})
     bufs = loader.copy_files_to_device()
@@ -119,6 +131,21 @@ def test_shuffle(fstcpp_log, input_files, pg, framework):
     assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
 
 
+def _skip_if_no_f4_compare(torch, device: str) -> None:
+    """Skip when the backend has the F4 dtype but not its comparison kernel.
+
+    torch 2.9 on HCU raises NotImplementedError("compare_eq_ne_cuda") the
+    moment a test compares two F4 tensors, so hasattr() alone is not enough.
+    """
+    probe = torch.zeros(2, dtype=torch.uint8, device=device).view(
+        torch.float4_e2m1fn_x2
+    )
+    try:
+        probe.eq(probe)
+    except NotImplementedError:
+        pytest.skip(f"float4_e2m1fn_x2 comparison unsupported on {device}")
+
+
 def test_float4_shuffle_last_dim(fstcpp_log, tmp_dir, pg, framework):
     if framework.get_name() != "pytorch":
         pytest.skip("F4 is only available in PyTorch")
@@ -135,6 +162,7 @@ def test_float4_shuffle_last_dim(fstcpp_log, tmp_dir, pg, framework):
     rank = pg.rank()
     world_size = pg.size()
     device = f"cuda:{rank}" if is_gpu_found() else "cpu"
+    _skip_if_no_f4_compare(torch, device)
     filename = os.path.join(tmp_dir, "multi_f4.safetensors")
 
     if rank == 0:
@@ -213,6 +241,7 @@ def test_float4_float8_e8m0_collectives(fstcpp_log, tmp_dir, pg, framework):
     rank = pg.rank()
     world_size = pg.size()
     device = f"cuda:{rank}" if is_gpu_found() else "cpu"
+    _skip_if_no_f4_compare(torch, device)
     filename = os.path.join(tmp_dir, "multi_collectives_f4_f8e8m0.safetensors")
 
     if rank == 0:
