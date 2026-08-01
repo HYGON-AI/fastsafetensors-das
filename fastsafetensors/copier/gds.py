@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import ctypes
+import os
 import platform
+import sys
 import warnings
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata, init_logger, is_gpu_found
@@ -13,6 +16,52 @@ from .nogds import load_library_func, new_nogds_file_copier
 from .registry import CopierConstructFunc, register_copier_constructor
 
 logger = init_logger(__name__)
+
+NFS_SUPER_MAGIC = 0x6969  # same f_type for NFS v3/v4
+
+
+def _fs_magic(path: str) -> int:
+    """statfs(2) f_type of the filesystem backing path. 0 on failure/non-Linux."""
+    if platform.system() != "Linux":
+        return 0
+    # f_type is the first field of struct statfs (__fsword_t, 8 bytes on
+    # x86_64/aarch64); struct statfs is 120 bytes, buffer is oversized.
+    buf = (ctypes.c_ubyte * 256)()
+    try:
+        # fsencode, not encode: model dirs can hold non-UTF-8 names, and a
+        # UnicodeEncodeError here would fail the whole load instead of
+        # falling back.
+        if ctypes.CDLL(None, use_errno=True).statfs(os.fsencode(path), buf) != 0:
+            return 0
+    except (OSError, AttributeError, ValueError):
+        return 0
+    return int.from_bytes(bytes(buf[:8]), sys.byteorder)
+
+
+def _skip_fs_check() -> bool:
+    return os.getenv("FASTSAFETENSORS_SKIP_FS_CHECK", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _hyfs_gds_unsupported_fs(path: str, framework: FrameworkOpBase) -> bool:
+    """True if path is on a filesystem where hyfs GDS silently corrupts data.
+
+    hyfs (HCU GDS) reports support=true for NFS but cannot DMA to GPU memory
+    over it (TCP or RDMA transport alike; rpcrdma has no hyfs hooks), yielding
+    all-zero tensors or a kernel panic. NVIDIA/AMD are unaffected: cuFile
+    falls back to compat mode and hipFile whitelists filesystems, so the
+    guard is scoped to the hyfs platform (hip runtime + libhyfile loaded).
+    """
+    return (
+        framework.get_cuda_ver().startswith("hip")
+        and fstcpp.is_cufile_found()
+        and _fs_magic(path) == NFS_SUPER_MAGIC
+        and not _skip_fs_check()
+    )
 
 
 class GdsFileCopier(CopierInterface):
@@ -217,12 +266,26 @@ def new_gds_file_copier(
         return new_nogds_file_copier(device, bbuf_size_kb, max_threads)
 
     reader = fstcpp.gds_file_reader(max_threads, device_is_not_cpu, device_id)
+    nogds_constructor: List[CopierConstructFunc] = []  # built on first NFS file
 
     def construct_copier(
         metadata: SafeTensorsMetadata,
         device: Device,
         framework: FrameworkOpBase,
     ) -> CopierInterface:
+        if _hyfs_gds_unsupported_fs(metadata.src, framework):
+            warnings.warn(
+                "hyfs GDS cannot DMA from NFS (data corruption / kernel panic); "
+                "falling back to nogds for files on NFS. "
+                "Set FASTSAFETENSORS_SKIP_FS_CHECK=1 to force GDS.",
+                UserWarning,
+            )
+            logger.warning("file on NFS, using nogds: %s", metadata.src)
+            if not nogds_constructor:
+                nogds_constructor.append(
+                    new_nogds_file_copier(device, bbuf_size_kb, max_threads)
+                )
+            return nogds_constructor[0](metadata, device, framework)
         return GdsFileCopier(metadata, device, reader, framework)
 
     return construct_copier
