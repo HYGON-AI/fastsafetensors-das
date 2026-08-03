@@ -110,6 +110,13 @@ covering nothing, and a missing `nvidia-fs` makes it fail on an environment
 issue. CPU-only hosts fall back to `pread`, where the probe succeeds and those
 tests keep running, as they do upstream.
 
+The driver-level tests (`test_init_gds`, `test_close_gds`,
+`test_cufile_register_deregister`, `test_hyfs_loaded_on_hcu`) use a narrower
+probe that only opens the driver, with no file involved. They skip on a host
+whose GDS driver refuses to open at all -- see
+[HCU: hyfs Driver Version](#hcu-hyfs-driver-version) for the case that makes
+this happen in practice.
+
 Two environment variables affect the run:
 
 - `FASTSAFETENSORS_TEST_REQUIRE_GDS=1` -- assert that this host is *supposed*
@@ -122,6 +129,80 @@ Two environment variables affect the run:
 - `FASTSAFETENSORS_FORCE_NOGDS` -- has **no** effect on tests: an autouse
   fixture clears it per test, so a globally exported value cannot silently turn
   the GDS tests into nogds runs.
+
+# HCU: hyfs Driver Version
+
+On HCU, GDS is provided by hyfs (`libhyfile.so` plus the `hyfs` kernel module),
+shipped as a `dds-<version>.run` installer. **hyfs before 3.4.0.0 refuses to open
+its device on any host not booted with `iommu=off`**, which makes GDS unusable no
+matter how the rest of the stack is configured.
+
+The symptom is an exception out of `init_gds()`, with this on stderr:
+
+```
+init_gds: cuFileDriverOpen returned an error = 5011
+Error (libfiles.c:1011): open /dev/hyfs with error: 1 (Operation not permitted)
+```
+
+and this in the kernel log:
+
+```
+no iommu : 0, iommu is not disabled!
+iommu is not disabled, add "iommu=off amd_iommu=off" in grub.cfg please!
+```
+
+5011 is `CU_FILE_CUDA_DRIVER_ERROR`, but here it carries no CUDA/HIP meaning at
+all -- it only reports that `open("/dev/hyfs")` returned `EPERM`. Check the
+installed version first:
+
+```bash
+cat /opt/hyhal/.info/gds_version     # 2.0.0.3 -> affected, 3.4.0.0 -> fine
+```
+
+The whole difference is in `hyfs_open()`. 2.0.0.3 treats the IOMMU check as a
+gate; 3.4.0.0 keeps the identical message but demotes it to advice and falls
+through to `hyfs_mtable_alloc()`, so the open succeeds:
+
+```c
+/* 3.4.0.0 -- hyfs_core.c */
+if (!iommu_is_disabled()) {
+    pr_warn("iommu is not disabled, add \"iommu=off amd_iommu=off\" ...");
+}                                  /* 2.0.0.3 did `return -EPERM;` here */
+ptable = hyfs_mtable_alloc();
+```
+
+**Upgrade the driver; do not add `iommu=off`.** `iommu_is_disabled()` tests the
+kernel's `no_iommu` variable, which is set only by an explicit `iommu=off` boot
+parameter -- never by whether an IOMMU is actually active. A host whose firmware
+exposes no IOMMU at all (no ACPI `IVRS` table, empty `/sys/class/iommu`, zero
+entries under `/sys/kernel/iommu_groups`) still fails the check, and adding the
+boot parameter would change nothing but that one variable. The driver even
+livepatches `nommu_map_page`/`nommu_map_sg` -- the DMA path the kernel uses when
+there is *no* IOMMU -- so a successful patch is itself evidence the check is
+looking at the wrong thing.
+
+Upgrading in place requires `rmmod hyfs`, which the installer performs after
+disabling the module's livepatch. That transition completes only once every task
+on the machine can be switched to the new patch state, and a task whose kernel
+stack cannot be unwound reliably blocks it indefinitely -- so on a busy host the
+uninstall fails with `rmmod: ERROR: Module hyfs is in use` while nothing actually
+holds `/dev/hyfs`. To name the blocking tasks:
+
+```bash
+echo 'func klp_try_switch_task +p' > /sys/kernel/debug/dynamic_debug/control
+echo 0 > /sys/kernel/livepatch/hyfs/enabled
+dmesg | grep "unreliable stack"                # names the blocking tasks
+echo 1 > /sys/kernel/livepatch/hyfs/enabled    # restore if you abort
+```
+
+The installer polls `.../enabled`, which reads back `0` immediately while the
+transition is still running, then retries `rmmod` for only 30 seconds -- so it
+reports `Uninstall hyfs module fail.` and exits. It gives up before touching
+`/opt/hyhal` or the loaded module, leaving the host unchanged. Wait for the
+blocking tasks to exit, or reboot, before retrying.
+
+On an affected host the driver-level GDS tests skip rather than fail; set
+`FASTSAFETENSORS_TEST_REQUIRE_GDS=1` to turn those skips back into failures.
 
 # GDS/HCU Defaults
 

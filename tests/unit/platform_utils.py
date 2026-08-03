@@ -84,6 +84,42 @@ def skip_if_no_gds(path):
     pytest.skip(reason)
 
 
+_driver_probe = None
+
+
+def gds_driver_can_open():
+    """True if the GDS driver itself can be opened.
+
+    Narrower than gds_can_open(): no file and no filesystem involved, just
+    cuFileDriverOpen/hipFileDriverOpen. hyfs before 3.4.0.0 refuses the open
+    outright on a host booted without `iommu=off` (see README), which is a
+    property of the installed driver, not of the storage. Cached.
+    """
+    global _driver_probe
+    if _driver_probe is None:
+        try:
+            from fastsafetensors import cpp as fstcpp
+
+            _driver_probe = fstcpp.init_gds() == 0
+        except Exception:
+            _driver_probe = False
+    return _driver_probe
+
+
+def skip_if_no_gds_driver():
+    """Skip a driver-level GDS test when the driver cannot be opened at all.
+
+    Same contract as skip_if_no_gds(): a silent skip by default, and a loud
+    failure under FASTSAFETENSORS_TEST_REQUIRE_GDS=1.
+    """
+    if gds_driver_can_open():
+        return
+    reason = "GDS driver cannot be opened (no kernel module, or hyfs refuses the open)"
+    if os.getenv("FASTSAFETENSORS_TEST_REQUIRE_GDS") == "1":
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
 def is_hyfs_gds():
     """True only when GDS is backed by hyfs (HCU), not by NVIDIA cuFile.
 

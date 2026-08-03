@@ -26,11 +26,12 @@ def hyfs_on_nfs(monkeypatch, framework, tmp_dir):
     # Deployment hosts may export this globally (the guard's own warning tells
     # them to); left set, the fallback assertions below would fail.
     monkeypatch.delenv("FASTSAFETENSORS_SKIP_FS_CHECK", raising=False)
-    monkeypatch.setattr(
-        gds_mod, "_fs_magic", lambda path: gds_mod.NFS_SUPER_MAGIC
-    )
+    monkeypatch.setattr(gds_mod, "_fs_magic", lambda path: gds_mod.NFS_SUPER_MAGIC)
     monkeypatch.setattr(framework, "get_cuda_ver", lambda: "hip-5.7.0")
     monkeypatch.setattr(gds_mod.fstcpp, "is_cufile_found", lambda: True)
+    # Do not touch the real driver: on a live hyfs host cuFileDriverOpen can
+    # fail (e.g. 5011) and this guard test is about copier routing only.
+    monkeypatch.setattr(gds_mod, "init_gds", lambda: None)
     src = f"{tmp_dir}/fs_guard_dummy.bin"
     with open(src, "wb") as f:
         f.write(b"\0" * 16)

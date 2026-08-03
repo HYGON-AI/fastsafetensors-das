@@ -24,6 +24,7 @@ from platform_utils import (
     is_hyfs_gds,
     is_rocm_platform,
     skip_if_no_gds,
+    skip_if_no_gds_driver,
     skip_if_rocm_expected_failure,
 )
 
@@ -243,6 +244,7 @@ def test_get_alignment_size() -> None:
 
 
 def test_init_gds(fstcpp_log) -> None:
+    skip_if_no_gds_driver()
     assert fstcpp.init_gds() == 0
 
 
@@ -273,9 +275,15 @@ def test_hyfs_loaded_on_hcu(fstcpp_log) -> None:
     # create_copier_constructor() silently downgrades to nogds (warning only) when
     # either of these is false, so a broken hyfs still passes every other test.
     assert fstcpp.is_gds_supported(0) == 1, "is_gds_available() HIP branch returned 0"
+    # Neither assertion above opens the driver, so both stay true on hyfs
+    # 2.0.0.3, which loads, resolves every symbol and reports support -- then
+    # refuses the open with 5011. Without this the test is green on a host
+    # where GDS cannot work at all. See README.
+    skip_if_no_gds_driver()
 
 
 def test_close_gds(fstcpp_log) -> None:
+    skip_if_no_gds_driver()
     assert fstcpp.close_gds() == 0
     if is_hyfs_gds():
         # cuFile re-opens the driver on demand; hyfs does not, so leaving it
@@ -307,6 +315,7 @@ def test_alloc_gds_buffer(fstcpp_log, framework) -> None:
 
 def test_cufile_register_deregister(fstcpp_log, framework) -> None:
     print("test_cufile_register_deregister")
+    skip_if_no_gds_driver()
     device, _ = get_and_check_device(framework)
     # hyfs has no implicit driver init, unlike cuFile.
     assert fstcpp.init_gds() == 0
