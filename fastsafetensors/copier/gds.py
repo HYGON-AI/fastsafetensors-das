@@ -232,7 +232,7 @@ def new_gds_file_copier(
     device_is_not_cpu = device.type != DeviceType.CPU
     if device_is_not_cpu and not is_gpu_found():
         raise Exception(
-            "[FAIL] GPU runtime library not found (expected libcudart.so, libamdhip64.so, or cudart64_XX.dll)"
+            "[FAIL] GPU runtime library not found (expected a CUDA or HIP runtime library)"
         )
     nogds = False
     if device_is_not_cpu and not nogds:

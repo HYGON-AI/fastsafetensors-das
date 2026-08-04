@@ -211,23 +211,24 @@ template <typename T> void mydlsym(T** h, void* lib, std::string const& name) {
 static bool load_gpu_lib(const std::string& lib_name, bool is_hip, bool init_log, int mode) {
     cudaError_t (*get_device_count)(int*) = nullptr;
     const char* sym_count = is_hip ? HIP_SYM_GET_DEVICE_COUNT : CUDA_SYM_GET_DEVICE_COUNT;
+    const char* display_name = is_hip ? "HIP runtime" : lib_name.c_str();
 
     void* handle = dlopen(lib_name.c_str(), mode);
     if (!handle) {
-        if (init_log) fprintf(stderr, "[DEBUG] %s is not installed. fallback\n", lib_name.c_str());
+        if (init_log) fprintf(stderr, "[DEBUG] %s is not installed. fallback\n", display_name);
         return false;
     }
 
     mydlsym(&get_device_count, handle, sym_count);
     if (!get_device_count) {
-        if (init_log) fprintf(stderr, "[DEBUG] No %s in %s, fallback!\n", sym_count, lib_name.c_str());
+        if (init_log) fprintf(stderr, "[DEBUG] No %s in %s, fallback!\n", sym_count, display_name);
         dlclose(handle);
         return false;
     }
 
     int count = 0;
     if (get_device_count(&count) != cudaSuccess) count = 0;
-    if (init_log) fprintf(stderr, "[DEBUG] %s: device count=%d\n", lib_name.c_str(), count);
+    if (init_log) fprintf(stderr, "[DEBUG] %s: device count=%d\n", display_name, count);
     if (count == 0) {
         dlclose(handle);
         return false;
@@ -265,11 +266,11 @@ static bool load_gpu_lib(const std::string& lib_name, bool is_hip, bool init_log
     dlclose(handle);
 
     if (!success) {
-        if (init_log) fprintf(stderr, "[DEBUG] %s missing required GPU functions. fallback\n", lib_name.c_str());
+        if (init_log) fprintf(stderr, "[DEBUG] %s missing required GPU functions. fallback\n", display_name);
         return false;
     }
 
-    if (init_log) fprintf(stderr, "[DEBUG] loaded: %s (hip=%d)\n", lib_name.c_str(), (int)is_hip);
+    if (init_log) fprintf(stderr, "[DEBUG] loaded: %s (hip=%d)\n", display_name, (int)is_hip);
     gpu_found = true;
     is_hip_runtime = is_hip;
     return true;
