@@ -230,3 +230,18 @@ See [Development](./docs/development.md).
 # Publication
 
 Takeshi Yoshimura, Tatsuhiro Chiba, Manish Sethi, Daniel Waddington, Swaminathan Sundararaman. (2025) Speeding up Model Loading with fastsafetensors [arXiv:2505.23072](https://arxiv.org/abs/2505.23072) and IEEE CLOUD 2025.
+
+# Upstream and License
+
+This repository is derived from the upstream fastsafetensors project and adds HCU support.
+
+- Upstream project: fastsafetensors
+- Upstream repository: https://github.com/foundation-model-stack/fastsafetensors
+- Upstream branch: main
+- Upstream tag: 0.3.2
+- Upstream commit: 7bae3af6df79592c829e5c5d0b7139dd2378136d
+- Upstream license: Apache-2.0 (see [LICENSE](./LICENSE))
+
+Modified by Hygon Information Technology Co., Ltd. The changes add hyfs-backed GDS support for HCU, an NFS fallback to nogds, and the related tests and documentation. Source files modified by HYGON carry a notice in their header.
+
+Third-party code: files inherited from upstream that carry their own notices (for example the DirectStorage headers in `fastsafetensors/cpp/`) are kept unchanged. HYGON adds no new third-party source.
