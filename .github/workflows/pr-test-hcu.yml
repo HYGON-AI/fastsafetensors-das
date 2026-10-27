@@ -1,0 +1,136 @@
+name: PR Test (HCU)
+
+on:
+    # Run the workflow file from the base branch so PRs (including forks) cannot alter the CI definition.
+    pull_request_target:
+        branches: [main]
+        types: [opened, synchronize, reopened, ready_for_review]
+    workflow_dispatch:
+        inputs:
+            pr-number:
+                description: 'PR number to merge into the selected branch (leave empty to test the branch as-is)'
+                required: false
+                default: ''
+            torch-version:
+                description: 'Torch version to test'
+                required: false
+                default: '2.10.0'
+            dtk-pkg:
+                description: 'Path to DTK package'
+                required: false
+                default: '/ArchivedFile/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz'
+
+permissions:
+    contents: read
+
+concurrency:
+    # A new PR commit supersedes the old validation run of the same PR; manual runs never cancel each other.
+    group: pr-test-hcu-${{ github.event.pull_request.number || github.run_id }}
+    cancel-in-progress: true
+
+env:
+    PIP_INDEX_URL: ${{ vars.PIP_INDEX_URL }}
+    PIP_TRUSTED_HOST: ${{ vars.PIP_TRUSTED_HOST }}
+    DEVPI_URL: ${{ vars.DEVPI_URL }}
+    # PR runs have no inputs, so fall back to the defaults.
+    DTK_PKG: ${{ inputs.dtk-pkg || '/ArchivedFile/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
+    TORCH_VERSION: ${{ inputs.torch-version || '2.10.0' }}
+
+jobs:
+    build-and-test:
+        name: Build and Test Python 
+        runs-on:
+            group: ci-general
+            labels: [nmz6]
+        container:
+            image: ${{ vars.IMAGE }}
+            volumes:
+                - /public/opendas/ArchivedFile:/ArchivedFile:ro
+                - /public5:/public5:ro
+                - /opt/hyhal/:/opt/hyhal/:ro
+            options: >-
+                --shm-size=16g
+                --device=/dev/kfd
+                --device=/dev/dri
+                --group-add=video
+                --cap-add=SYS_PTRACE
+                --security-opt seccomp=unconfined
+        steps:
+            - name: Checkout base branch
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ github.event.pull_request.base.ref || github.ref }}
+                  fetch-depth: 0
+                  # Keep the token out of .git/config so PR code cannot read it.
+                  persist-credentials: false
+
+            # ${{ github.workspace }} resolves to the host path in container jobs, so derive it inside the container.
+            - name: Set reports directory
+              run: echo "REPORTS_DIR=${GITHUB_WORKSPACE}/reports" >> "$GITHUB_ENV"
+
+            - name: Merge PR into base
+              if: github.event_name == 'pull_request_target' || inputs.pr-number != ''
+              env:
+                  # Pass via env instead of inline ${{ }} so a manual input cannot inject shell commands.
+                  PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr-number }}
+                  # The repo is private, so the fetch needs a token; pass it only to this one command so it never lands in .git/config.
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  auth=$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)
+                  git -c http.extraheader="AUTHORIZATION: basic ${auth}" \
+                      fetch "https://github.com/${GITHUB_REPOSITORY}.git" "pull/${PR_NUMBER}/head:pr"
+                  git merge --no-ff --no-edit pr
+
+            - name: install dtk
+              shell: bash
+              run: |
+                set -eu
+                cp -f ${DTK_PKG} /opt/
+                cd /opt && tar -xzf $(basename ${DTK_PKG}) && mv dtk-* dtk
+
+            - name: install Python dependencies
+              shell: bash
+              run: |
+                source /opt/dtk/env.sh
+                export DTK_TAG=$(sed -nE '1s/^DTK-([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/dtk\1\2\4/p' /opt/dtk/.dtk_version)
+                mkdir -p ~/.pip
+                cat > ~/.pip/pip.conf << EOF
+                [global]
+                    index-url = http://10.16.1.201:9929/nightly/${DTK_TAG}/+simple/
+                    trusted-host = 10.16.1.201
+                EOF
+                pip install torch==${TORCH_VERSION}
+                pip install numpy==1.24.3
+                pip install wheel setuptools pytest pybind11 transformers ciupload
+                pip install -e .
+            - name: build whl
+              shell: bash
+              run: |
+                source /opt/dtk/env.sh
+                DTK_VERSION=$(sed -nE '1s/^DTK-([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/dtk\1\2\4/p' /opt/dtk/.dtk_version)
+                VERSION="das.opt1.${DTK_VERSION}"
+                sed -i "s|^version = \"\\([^\"]*\\)\"$|version = \"\\1+${VERSION}\"|" pyproject.toml
+                python3 setup.py bdist_wheel
+                ${{ github.workspace }}/.github/script/repair_manylinux.sh
+                LOCAL_VER="$(git rev-parse --short=6 HEAD)"
+                export DTK_TAG=$(sed -nE '1s/^DTK-([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/dtk\1\2\4/p' /opt/dtk/.dtk_version)
+                wheel_pkg=$(ls -t dist/fastsafetensors-*.whl | head -n 1)
+                CIUpload REPAIR --dtk_version ${DTK_TAG#dtk} --torch_version ${{ env.TORCH_VERSION }} --git_commit ${LOCAL_VER} -f "${wheel_pkg}"
+                wheel_pkg=$(ls -t dist/fastsafetensors-*.whl | head -n 1)
+                pip install "${wheel_pkg}"
+            
+            - name: run tests
+              shell: bash
+              run: |
+                source /opt/dtk/env.sh
+                echo ">>>>>>>>>>>>>>>normal test<<<<<<<<<<<<<<<"
+                TEST_FASTSAFETENSORS_FRAMEWORK=pytorch python3 -m pytest tests/unit/ --ignore=tests/unit/threefs -q -rs 
+                echo ">>>>>>>>>>>>>>>gds test<<<<<<<<<<<<<<<"
+                TEST_FASTSAFETENSORS_FRAMEWORK=pytorch FASTSAFETENSORS_TEST_REQUIRE_GDS=1 python3 -m pytest tests/unit/ --ignore=tests/unit/threefs -q -rs 
+                echo ">>>>>>>>>>>>>>>multi-gpu test<<<<<<<<<<<<<<<"
+                TEST_FASTSAFETENSORS_FRAMEWORK=pytorch torchrun --nproc_per_node=2 --master_port=29500 -m pytest tests/unit/test_multi.py -q -rs 
+                echo ">>>>>>>>>>>>>>>cpu test<<<<<<<<<<<<<<<"
+                TEST_FASTSAFETENSORS_FRAMEWORK=pytorch CUDA_VISIBLE_DEVICES="" HIP_VISIBLE_DEVICES="" python3 -m pytest tests/unit/ --ignore=tests/unit/threefs -q -rs
+
