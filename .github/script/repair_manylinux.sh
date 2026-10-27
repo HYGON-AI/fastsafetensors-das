@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
 WORK_SPACE=$1
 MANYLINUX="yes"
 if [[ "${MANYLINUX}" == "yes" ]];then
