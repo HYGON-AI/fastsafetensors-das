@@ -49,6 +49,7 @@ jobs:
                 - /public5:/public5:ro
                 - /opt/hyhal/:/opt/hyhal/:ro
             options: >-
+                --privileged
                 --shm-size=16g
                 --device=/dev/kfd
                 --device=/dev/dri
