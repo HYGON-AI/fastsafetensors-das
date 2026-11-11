@@ -1,0 +1,75 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+name: fastsafetensors HCU CI
+on:
+  pull_request:
+    branches:
+    - main
+    types:
+    - opened
+    - synchronize
+    - reopened
+    - ready_for_review
+  push:
+    branches:
+    - main
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: fastsafetensors-hcu-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  build2604:
+    name: DTK2604 (py3.10, torch2.10.0)
+    uses: ./.github/workflows/_build-test-wheel.yml
+    with:
+      dtk_version: '26.04'
+      dtk_ver: '2604'
+      py_version: '3.10'
+      numpy_version: '1.24.3'
+      torch_version: '2.10.0'
+      run_tests: ${{ github.event_name != 'push' }}
+  build2610:
+    name: DTK2610 (torch${{ matrix.torch_version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        torch_version:
+        - '2.11.0'
+        - '2.13.0'
+    uses: ./.github/workflows/_build-test-wheel.yml
+    with:
+      dtk_version: '26.10'
+      dtk_ver: '2610'
+      py_version: '3.12'
+      numpy_version: '1.26.4'
+      torch_version: ${{ matrix.torch_version }}
+      run_tests: ${{ github.event_name != 'push' }}
+  publish-2610:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs:
+    - build2610
+    uses: ./.github/workflows/_publish.yml
+    with:
+      dtk_version: '26.10'
+      dtk_ver: '2610'
+      dtk_pkg_name: DTK-26.10-Rocky8.6-x86_64.tar.gz
+    secrets:
+      PYPI_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+  ci-result:
+    if: ${{ always() }}
+    needs:
+    - build2604
+    - build2610
+    runs-on: hygon-cpu
+    env:
+      BUILD_2604: ${{ needs.build2604.result }}
+      BUILD_2610: ${{ needs.build2610.result }}
+    steps:
+    - name: Require completed CI jobs
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$BUILD_2604" = success
+        test "$BUILD_2610" = success

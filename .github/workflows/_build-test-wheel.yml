@@ -1,0 +1,110 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+name: Build and test wheel
+on:
+  workflow_call:
+    inputs:
+      dtk_version:
+        required: true
+        type: string
+      dtk_ver:
+        required: true
+        type: string
+      py_version:
+        required: true
+        type: string
+      numpy_version:
+        required: true
+        type: string
+      torch_version:
+        required: true
+        type: string
+      run_tests:
+        required: true
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: hygon-build
+    timeout-minutes: 120
+    container:
+      image: ${{ vars.DTK_IMAGE_REGISTRY || '10.16.1.152:5000/hcu/base/dtk' }}:${{ inputs.dtk_version }}-rockylinux8.6-py${{ inputs.py_version
+        }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYPI_URL: ${{ vars.PYPI_URL || 'http://12.12.12.201:9929' }}
+      TRITON_PYPI_URL: ${{ vars.TRITON_PYPI_URL || vars.PYPI_URL || 'http://12.12.12.201:9929' }}
+      PYTHONUNBUFFERED: '1'
+      DTK_VER: ${{ inputs.dtk_ver }}
+      PYTHON_VERSION: ${{ inputs.py_version }}
+      NUMPY_VERSION: ${{ inputs.numpy_version }}
+      TORCH_VERSION: ${{ inputs.torch_version }}
+    steps:
+    - name: Checkout integrated source
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Verify source
+      run: bash .github/scripts/checkout-source.sh
+    - name: Prepare build environment
+      run: bash .github/scripts/setup-env.sh --build
+    - name: Build and repair wheel
+      run: bash .github/scripts/_build_hcu_wheel.sh
+    - name: Upload built wheels
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheel-dtk${{ inputs.dtk_ver }}-py${{ inputs.py_version }}-torch${{ inputs.torch_version }}
+        path: output/
+        if-no-files-found: error
+        retention-days: 7
+  correctness:
+    if: ${{ inputs.run_tests }}
+    needs: build
+    runs-on: hygon-bw1100-4card
+    timeout-minutes: 120
+    container:
+      image: ${{ vars.DTK_IMAGE_REGISTRY || '10.16.1.152:5000/hcu/base/dtk' }}:${{ inputs.dtk_version }}-rockylinux8.6-py${{ inputs.py_version
+        }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYPI_URL: ${{ vars.PYPI_URL || 'http://12.12.12.201:9929' }}
+      TRITON_PYPI_URL: ${{ vars.TRITON_PYPI_URL || vars.PYPI_URL || 'http://12.12.12.201:9929' }}
+      PYTHONUNBUFFERED: '1'
+      DTK_VER: ${{ inputs.dtk_ver }}
+      PYTHON_VERSION: ${{ inputs.py_version }}
+      NUMPY_VERSION: ${{ inputs.numpy_version }}
+      TORCH_VERSION: ${{ inputs.torch_version }}
+    steps:
+    - name: Checkout integrated source
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Verify source
+      run: bash .github/scripts/checkout-source.sh
+    - name: Download built wheel
+      uses: actions/download-artifact@v4
+      with:
+        name: wheel-dtk${{ inputs.dtk_ver }}-py${{ inputs.py_version }}-torch${{ inputs.torch_version }}
+        path: output
+    - name: Prepare test environment
+      run: bash .github/scripts/setup-env.sh
+    - name: Run CPU, HCU, GDS and two-rank tests
+      run: bash .github/scripts/test-correctness.sh
+    - name: Upload correctness reports
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: correctness-reports-dtk${{ inputs.dtk_ver }}-py${{ inputs.py_version }}-torch${{ inputs.torch_version }}
+        path: reports/
+        if-no-files-found: warn
+        retention-days: 7
