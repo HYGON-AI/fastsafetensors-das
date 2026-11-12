@@ -17,10 +17,10 @@ on:
         description: 'Torch version to test'
         required: false
         default: '2.10.0'
-      dtk-pkg:
-        description: 'Path to DTK package'
+      image:
+        description: 'docker image'
         required: false
-        default: '/ArchivedFile/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz'
+        default: ''
       pip_index_url:
         description: 'pip_index_url'
         required: false
@@ -43,7 +43,6 @@ env:
     DEVPI_URL: ${{ vars.DEVPI_URL }}
     CIUPLOAD_PASSWORD: ${{ secrets.CIUPLOAD_PASSWORD }}
     # push runs have no inputs, so fall back to the defaults.
-    DTK_PKG: ${{ inputs.dtk-pkg || '/ArchivedFile/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
     TORCH_VERSION: ${{ inputs.torch-version || '2.10.0' }}
 
 concurrency:
@@ -53,10 +52,10 @@ concurrency:
 
 jobs:
     build-and-upload:
-        name: Build and Test Python 
+        name: Build and upload
         runs-on: hygon-build
         container:
-            image: ${{ vars.IMAGE }}
+            image: ${{ inputs.image || vars.IMAGE }}
         steps:
             - name: Checkout
               uses: actions/checkout@v4
@@ -71,12 +70,6 @@ jobs:
             - name: Set reports directory
               run: echo "REPORTS_DIR=${GITHUB_WORKSPACE}/reports" >> "$GITHUB_ENV"
 
-            - name: install dtk
-              shell: bash
-              run: |
-                set -eu
-                cp -f ${DTK_PKG} /opt/
-                cd /opt && tar -xzf $(basename ${DTK_PKG}) && mv dtk-* dtk
 
             - name: install Python dependencies
               shell: bash

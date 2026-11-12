@@ -15,10 +15,10 @@ on:
                 description: 'Torch version to test'
                 required: false
                 default: '2.10.0'
-            dtk-pkg:
-                description: 'Path to DTK package'
+            image:
+                description: 'docker image'
                 required: false
-                default: '/ArchivedFile/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz'
+                default: ''
             pip_index_url:
                 description: 'pip_index_url'
                 required: false
@@ -41,7 +41,6 @@ env:
     PIP_TRUSTED_HOST: ${{ inputs.pip_trusted_host || vars.PIP_TRUSTED_HOST }}
     DEVPI_URL: ${{ vars.DEVPI_URL }}
     # PR runs have no inputs, so fall back to the defaults.
-    DTK_PKG: ${{ inputs.dtk-pkg || '/ArchivedFile/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
     TORCH_VERSION: ${{ inputs.torch-version || '2.10.0' }}
 
 jobs:
@@ -49,7 +48,7 @@ jobs:
         name: Build and Test Python 
         runs-on: hygon-nmz6-gds
         container:
-            image: ${{ vars.IMAGE }}
+            image: ${{ inputs.image || vars.IMAGE }}
         steps:
             - name: Checkout base branch
               uses: actions/checkout@v4
