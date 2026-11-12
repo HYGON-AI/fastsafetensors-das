@@ -1,0 +1,116 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+name: Nightly Wheel
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '要构建的 Git ref/branch/tag/SHA，默认当前分支 HEAD'
+        required: false
+        default: ''
+        type: string
+      torch-version:
+        description: 'Torch version to test'
+        required: false
+        default: '2.10.0'
+      dtk-pkg:
+        description: 'Path to DTK package'
+        required: false
+        default: '/ArchivedFile/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz'
+      pip_index_url:
+        description: 'pip_index_url'
+        required: false
+        default: ''
+      pip_trusted_host:
+        description: 'pip_trusted_host'
+        required: false
+        default: ''
+  
+permissions:
+  contents: read
+  # CIUpload --record 上传前需查询关联 PR (只读)
+  pull-requests: read
+  # CIUpload --record 上报需读取 check-run 统计 (只读)
+  checks: read
+
+env:
+    PIP_INDEX_URL: ${{ inputs.pip_index_url || vars.PIP_INDEX_URL }}
+    PIP_TRUSTED_HOST: ${{ inputs.pip_trusted_host || vars.PIP_TRUSTED_HOST }}
+    DEVPI_URL: ${{ vars.DEVPI_URL }}
+    CIUPLOAD_PASSWORD: ${{ secrets.CIUPLOAD_PASSWORD }}
+    # push runs have no inputs, so fall back to the defaults.
+    DTK_PKG: ${{ inputs.dtk-pkg || '/ArchivedFile/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
+    TORCH_VERSION: ${{ inputs.torch-version || '2.10.0' }}
+
+concurrency:
+  # Keyed on the requested ref as well, so a manual build of another branch does not cancel the nightly on main.
+  group: nightly-wheel-${{ inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+    build-and-upload:
+        name: Build and Test Python 
+        runs-on: hygon-build
+        container:
+            image: ${{ vars.IMAGE }}
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  # workflow_dispatch: honor the requested ref (branch/tag/SHA); empty means the triggering ref.
+                  ref: ${{ inputs.ref || github.ref }}
+                  fetch-depth: 0
+                  # Keep the token out of .git/config so the checked-out code cannot read it.
+                  persist-credentials: false
+
+            # ${{ github.workspace }} resolves to the host path in container jobs, so derive it inside the container.
+            - name: Set reports directory
+              run: echo "REPORTS_DIR=${GITHUB_WORKSPACE}/reports" >> "$GITHUB_ENV"
+
+            - name: install dtk
+              shell: bash
+              run: |
+                set -eu
+                cp -f ${DTK_PKG} /opt/
+                cd /opt && tar -xzf $(basename ${DTK_PKG}) && mv dtk-* dtk
+
+            - name: install Python dependencies
+              shell: bash
+              run: |
+                source /opt/dtk/env.sh
+                pip install torch==${TORCH_VERSION}
+                pip install numpy==1.24.3
+                pip install wheel setuptools pytest pybind11 transformers ciupload
+                pip install -e .
+
+            - name: build whl
+              shell: bash
+              run: |
+                source /opt/dtk/env.sh
+                DTK_VERSION=$(sed -nE '1s/^DTK-([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/dtk\1\2\4/p' /opt/dtk/.dtk_version)
+                VERSION="das.opt1.${DTK_VERSION}"
+                sed -i "s|^version = \"\\([^\"]*\\)\"$|version = \"\\1+${VERSION}\"|" pyproject.toml
+                python3 setup.py bdist_wheel
+                bash .github/script/repair_manylinux.sh ${PWD}
+                LOCAL_VER="$(git rev-parse --short=6 HEAD)"
+                export DTK_TAG=$(sed -nE '1s/^DTK-([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/dtk\1\2\4/p' /opt/dtk/.dtk_version)
+                wheel_pkg=$(ls -t dist/fastsafetensors-*.whl | head -n 1)
+                mkdir -p repair
+                CIUpload REPAIR --dtk_version ${DTK_TAG#dtk} --torch_version ${{ env.TORCH_VERSION }} --git_commit ${LOCAL_VER} --outputdir ./repair -f "${wheel_pkg}"
+                CIUpload NIGHTLY \
+                   --dtk_version ${DTK_TAG#dtk}\
+                   --password "${CIUPLOAD_PASSWORD}"\
+                   --record \
+                   -f ./repair/*.whl
+
+            - name: Upload wheels
+              uses: actions/upload-artifact@v4
+              with:
+                name: adapter-wheels
+                path: dist/*.whl
+                if-no-files-found: error
+    

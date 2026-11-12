@@ -19,6 +19,14 @@ on:
                 description: 'Path to DTK package'
                 required: false
                 default: '/ArchivedFile/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz'
+            pip_index_url:
+                description: 'pip_index_url'
+                required: false
+                default: ''
+            pip_trusted_host:
+                description: 'pip_trusted_host'
+                required: false
+                default: ''
 
 permissions:
     contents: read
@@ -29,8 +37,8 @@ concurrency:
     cancel-in-progress: true
 
 env:
-    PIP_INDEX_URL: ${{ vars.PIP_INDEX_URL }}
-    PIP_TRUSTED_HOST: ${{ vars.PIP_TRUSTED_HOST }}
+    PIP_INDEX_URL: ${{ inputs.pip_index_url || vars.PIP_INDEX_URL }}
+    PIP_TRUSTED_HOST: ${{ inputs.pip_trusted_host || vars.PIP_TRUSTED_HOST }}
     DEVPI_URL: ${{ vars.DEVPI_URL }}
     # PR runs have no inputs, so fall back to the defaults.
     DTK_PKG: ${{ inputs.dtk-pkg || '/ArchivedFile/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
@@ -39,23 +47,9 @@ env:
 jobs:
     build-and-test:
         name: Build and Test Python 
-        runs-on:
-            group: ci-general
-            labels: [nmz6]
+        runs-on: hygon-nmz6-gds
         container:
             image: ${{ vars.IMAGE }}
-            volumes:
-                - /public/opendas/ArchivedFile:/ArchivedFile:ro
-                - /public5:/public5:ro
-                - /opt/hyhal/:/opt/hyhal/:ro
-            options: >-
-                --privileged
-                --shm-size=16g
-                --device=/dev/kfd
-                --device=/dev/dri
-                --group-add=video
-                --cap-add=SYS_PTRACE
-                --security-opt seccomp=unconfined
         steps:
             - name: Checkout base branch
               uses: actions/checkout@v4
@@ -95,17 +89,11 @@ jobs:
               shell: bash
               run: |
                 source /opt/dtk/env.sh
-                export DTK_TAG=$(sed -nE '1s/^DTK-([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/dtk\1\2\4/p' /opt/dtk/.dtk_version)
-                mkdir -p ~/.pip
-                cat > ~/.pip/pip.conf << EOF
-                [global]
-                    index-url = http://10.16.1.201:9929/nightly/${DTK_TAG}/+simple/
-                    trusted-host = 10.16.1.201
-                EOF
                 pip install torch==${TORCH_VERSION}
                 pip install numpy==1.24.3
                 pip install wheel setuptools pytest pybind11 transformers ciupload
                 pip install -e .
+
             - name: build whl
               shell: bash
               run: |
