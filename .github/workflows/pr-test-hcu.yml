@@ -77,12 +77,6 @@ jobs:
                       fetch "https://github.com/${GITHUB_REPOSITORY}.git" "pull/${PR_NUMBER}/head:pr"
                   git merge --no-ff --no-edit pr
 
-            - name: install dtk
-              shell: bash
-              run: |
-                set -eu
-                cp -f ${DTK_PKG} /opt/
-                cd /opt && tar -xzf $(basename ${DTK_PKG}) && mv dtk-* dtk
 
             - name: install Python dependencies
               shell: bash
