@@ -4,7 +4,7 @@ on:
     # Run the workflow file from the base branch so PRs (including forks) cannot alter the CI definition.
     pull_request_target:
         branches: [main]
-        types: [opened, synchronize, reopened, ready_for_review]
+        types: [labeled]
     workflow_dispatch:
         inputs:
             pr-number:
@@ -46,6 +46,8 @@ env:
 jobs:
     build-and-test:
         name: Build and Test Python 
+        if: (github.event_name != 'pull_request_target' ||
+             github.event.label.name == 'run-ci')
         runs-on: hygon-nmz6-gds
         container:
             image: ${{ inputs.image || vars.IMAGE }}
