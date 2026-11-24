@@ -48,7 +48,7 @@ jobs:
         name: Build and Test Python 
         if: (github.event_name != 'pull_request_target' ||
              github.event.label.name == 'run-ci')
-        runs-on: hygon-nmz6-gds
+        runs-on: hygon-bw1100-4card
         container:
             image: ${{ inputs.image || vars.IMAGE }}
         steps:
